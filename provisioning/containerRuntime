@@ -1,0 +1,53 @@
+#!/bin/bash
+
+
+### The first step is to verify mac_adress and product_uid that act as unique identifiers for the nodes by kubernetes
+### We skip the check and assume that they are unique
+
+
+echo INFO: Change SELINUX mode
+### for debugging purpose we set setenforce to permissive all violation of the policy will be logged
+sudo setenforce 0 # the command will apply this change until the next reboot
+sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config ### here we make the change permanent
+
+echo INFO: SET CUSTOM CONFIG FOR KUB REPO
+# This overwrites any existing configuration in /etc/yum.repos.d/kubernetes.repo
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
+exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+EOF
+
+
+echo "INFO:  install requested kube packages"
+# kubeadm: the command to bootstrap the cluster
+# kubelet: the component that runs on all of the machines in your cluster and does things like starting pods and containers.
+# kubeadm will not install or manage kubelet or kubectl for you
+sudo yum install -qq -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+sudo systemctl enable --now kubelet
+
+sudo sysctl net.bridge.bridge-nf-call-iptables=1
+sudo yum install -qq -y yum-utils
+sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+sudo yum install -qq -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+echo "INFO: Restart container runtime and docker and test it"
+sudo systemctl start containerd && sudo systemctl start docker \
+&& sudo docker run hello-world
+
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+
+sudo sed -i 's/            SystemdCgroup = false/            SystemdCgroup = true/' /etc/containerd/config.toml
+
+sudo sed -i 's/disabled_plugins/#disabled_plugins/' /etc/containerd/config.toml
+
+sudo systemctl restart containerd
+sudo swapoff -a
+echo "******** Open a specific port to allow communication between nodes"
+sudo iptables -A INPUT -p tcp --dport 6443 -j ACCEPT
